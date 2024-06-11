@@ -2,10 +2,11 @@ from googletrans import Translator
 from telebot.async_telebot import AsyncTeleBot
 import asyncio
 import aiohttp
-from telebot import types
 from tokens import TG_TOKEN, OCR_APIKEY
-from requests import get
-import json
+from random import choice
+import requests
+from bs4 import BeautifulSoup
+
 
 bot = AsyncTeleBot(TG_TOKEN, parse_mode=None)
 
@@ -16,29 +17,20 @@ async def get_response(url, params):
             return await resp.json()
 
 
-# Обработка команды /start приветствие.
-@bot.message_handler(commands=['start'])
-async def send_welcome(message):
-    await bot.reply_to(message, '------\n'
-                       + 'Здравствуй, '
-                       + message.from_user.first_name
-                       + ' \nПереведу с русского на английский \nИ с других языков на русский '
-                       + '\n------')
-
-
 # Обработка команды /help.
 @bot.message_handler(commands=['help'])
 async def send_help(message):
     await bot.reply_to(message, '------\n'
-                       + 'Просто вводи текст и нажимай отправить\n'
-                       + 'Я сам определю какой это язык\n'
-                       + 'Если не перевел, попробуй еще раз\n'
+                       + 'Просто отправь текст или картинку для распознавания текста\n'
+                       + 'Текст переводится с русского на английский,'
+                       + ' с других языков на русский\n'
+                       + 'Распознавание текста OCR\n'
                        + 'Перевод google'
                        + '\n------'
                        + '\nДоступные команды:'
                        + '\n/help'
-                       + '\n/start'
-                       + '\n/dictionary <слово>')
+                       + '\n/dictionary <слово>'
+                       + '\n/what_to_read')
 
 
 # Обработка команды /dictionary.
@@ -53,6 +45,50 @@ async def dictionary(message):
                               "\n".join([definition['definition'] for definition in meaning['definitions']]) for meaning
                               in response[0]['meanings']])
     await bot.reply_to(message, word_meaning)
+
+
+# Обработка команды /what_to_read.
+@bot.message_handler(commands=['what_to_read'])
+async def scrap_html(message):
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
+                      "Chrome/58.0.3029.110 Safari/537.36"}
+    response = requests.get('https://en.wikipedia.org/wiki/List_of_novels_based_on_comics', headers=headers)
+
+    # Инициализируем списки данных для хранения полученной скрейпингом информации
+    titles = []
+    authors = []
+    publishers = []
+    release_dates = []
+
+    # Проверяем валидность полученного ответа
+    if response.status_code == 200:
+
+        # Парсим HTML при помощи Beautiful Soup
+        soup = BeautifulSoup(response.text, 'html.parser')
+
+        # CSS-селектор для основных таблиц
+        table = soup.find('table', {'class': 'wikitable'})
+
+        # Обходим строки в цикле, пропуская заголовок
+        for row in table.find_all('tr')[1:]:
+            # Извлекаем данные каждого столбца при помощи CSS-селекторов
+            columns = row.find_all(['td', 'th'])
+
+            title = columns[0].text.strip()
+            author = columns[1].text.strip()
+            publisher = columns[2].text.strip()
+            release_date = columns[4].text.strip()
+
+            titles.append(title)
+            authors.append(author)
+            publishers.append(publisher)
+            release_dates.append(release_date)
+
+    random_book_number = choice([x for x in range(len(titles))])
+
+    await bot.reply_to(message, f'''Название: {titles[random_book_number]}\nАвтор: {authors[random_book_number]}
+Дата выхода: {release_dates[random_book_number]}''')
 
 
 # Обработка текста сообщения, если ввод на русском, то перевод на английский,
@@ -76,7 +112,7 @@ async def user_text(message):
         await bot.reply_to(message, '------\n' + send.text + '\n------')
 
 
-# Обработка картинок с подписями
+# Обработка картинок
 @bot.message_handler(content_types=['photo'])
 async def handle_image(message):
     # Обработчик изображений
@@ -92,38 +128,6 @@ async def handle_image(message):
         "filetype": photo.file_path.split(".")[-1]})
     words = response['ParsedResults'][0]['ParsedText']
     await bot.reply_to(message, f'Распознанный текст: {words}')
-
-
-# Обработка инлайн запросов. Инлайн режим необходимо включить в настройках бота у @BotFather.
-@bot.inline_handler(lambda query: True)
-async def inline_query(query):
-    results = []
-    translator = Translator()
-    text = query.query.strip()
-
-    # Если запрос пустой, не делаем перевод
-    if not text:
-        return
-
-    # Определение языка ввода.
-    lang = translator.detect(text)
-    lang = lang.lang
-
-    # Если ввод по русски, то перевести на английский по умолчанию.
-    if lang == 'ru':
-        send = translator.translate(text)
-        results.append(types.InlineQueryResultArticle(
-            id='1', title=send.text, input_message_content=types.InputTextMessageContent(
-                message_text=send.text)))
-
-    # Иначе другой язык перевести на русский {dest='ru'}.
-    else:
-        send = translator.translate(text, dest='ru')
-        results.append(types.InlineQueryResultArticle(
-            id='1', title=send.text, input_message_content=types.InputTextMessageContent(
-                message_text=send.text)))
-
-    await bot.answer_inline_query(query.id, results)
 
 
 # Запуск и повторение запуска при сбое.
